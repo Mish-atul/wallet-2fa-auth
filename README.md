@@ -8,6 +8,9 @@ A modern, secure authentication system that combines traditional email/password 
 ![Supabase](https://img.shields.io/badge/Supabase-Backend-green)
 ![MetaMask](https://img.shields.io/badge/MetaMask-Integration-orange)
 
+
+🔗 **Live Demo:** [https://wallet-2fa-auth.vercel.app/](https://wallet-2fa-auth.vercel.app/)  
+
 ## ✨ Features
 
 ### 🔒 **Dual-Layer Security**
