@@ -44,8 +44,15 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') || 'https://cdvdbyinqosqidwavobp.supabase.co';
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkdmRieWlucW9zcWlkd2F2b2JwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDY4MzMzNywiZXhwIjoyMDc2MjU5MzM3fQ.QTQdlu-5s0iiqfSrSsYADaRLNc5eCWCF7zYn3Vsfw8Y';
+    // ⚠️ SECURITY FIX: Remove hardcoded credentials and use environment variables only
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    
+    // Validate environment variables are set
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Missing required environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+    }
+    
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Retrieve nonce from database
@@ -89,23 +96,11 @@ Deno.serve(async (req: Request) => {
     }
 
     // Verify SIWE signature
-    let walletAddress: string;
     try {
       const siweMessage = new SiweMessage(message);
       const fields = await siweMessage.verify({ signature });
-      
-      if (!fields.success) {
-        return new Response(
-          JSON.stringify({ error: 'Invalid signature' }),
-          {
-            status: 401,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          }
-        );
-      }
 
-      // Verify nonce matches
-      if (siweMessage.nonce !== nonceData.nonce) {
+      if (fields.data.nonce !== nonceData.nonce) {
         return new Response(
           JSON.stringify({ error: 'Invalid nonce' }),
           {
@@ -115,44 +110,32 @@ Deno.serve(async (req: Request) => {
         );
       }
 
-      walletAddress = siweMessage.address;
-    } catch (error) {
-      console.error('Signature verification error:', error);
-      return new Response(
-        JSON.stringify({ error: 'Signature verification failed' }),
-        {
-          status: 401,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
-    }
+      const walletAddress = fields.data.address;
 
-    // Get user information to check existing wallet address
-    const { data: userData, error: userError } = await supabase
-      .from('users')
-      .select('id, email, wallet_address')
-      .eq('id', nonceData.user_id)
-      .single();
+      // Get user information
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', nonceData.user_id)
+        .single();
 
-    if (userError || !userData) {
-      return new Response(
-        JSON.stringify({ error: 'User not found' }),
-        {
-          status: 404,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        }
-      );
-    }
-
-    // Validate wallet address
-    if (userData.wallet_address) {
-      // User has a registered wallet address - it must match
-      if (userData.wallet_address.toLowerCase() !== walletAddress.toLowerCase()) {
+      if (userError || !userData) {
         return new Response(
-          JSON.stringify({ 
-            error: 'Wallet address mismatch. Please connect the wallet address associated with this account.',
-            expectedWallet: `${userData.wallet_address.slice(0, 6)}...${userData.wallet_address.slice(-4)}`,
-            connectedWallet: `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
+          JSON.stringify({ error: 'User not found' }),
+          {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
+      }
+
+      // Check if wallet address matches
+      if (userData.wallet_address && userData.wallet_address !== walletAddress) {
+        return new Response(
+          JSON.stringify({
+            error: 'Wallet address mismatch. Please use the correct wallet.',
+            expectedWallet: userData.wallet_address,
+            connectedWallet: walletAddress,
           }),
           {
             status: 403,
@@ -160,46 +143,55 @@ Deno.serve(async (req: Request) => {
           }
         );
       }
-    } else {
-      // First time wallet connection - store the wallet address
-      await supabase
-        .from('users')
-        .update({ wallet_address: walletAddress })
-        .eq('id', userData.id);
-    }
 
-    // Mark nonce as used
-    await supabase
-      .from('auth_nonces')
-      .update({ used: true })
-      .eq('login_id', loginId);
-
-    // Generate a simple JWT-like token (in production, use proper JWT library)
-    const token = btoa(JSON.stringify({
-      userId: userData.id,
-      email: userData.email,
-      walletAddress,
-      exp: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
-    }));
-
-    return new Response(
-      JSON.stringify({
-        success: true,
-        token,
-        user: {
-          email: userData.email,
-          walletAddress,
-        },
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      // Update user's wallet address if not set
+      if (!userData.wallet_address) {
+        await supabase
+          .from('users')
+          .update({ wallet_address: walletAddress })
+          .eq('id', nonceData.user_id);
       }
-    );
+
+      // Mark nonce as used
+      await supabase
+        .from('auth_nonces')
+        .update({ used: true })
+        .eq('id', nonceData.id);
+
+      // Generate session token (simple JWT-like token)
+      const sessionToken = crypto.randomUUID();
+      const expirationTime = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          token: sessionToken,
+          user: {
+            id: userData.id,
+            email: userData.email,
+            walletAddress,
+          },
+          expiresAt: expirationTime.toISOString(),
+        }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    } catch (error) {
+      console.error('SIWE verification error:', error);
+      return new Response(
+        JSON.stringify({ error: 'Invalid signature' }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
   } catch (error) {
-    console.error('Verification error:', error);
+    console.error('2FA verification error:', error);
     return new Response(
-      JSON.stringify({ error: 'Internal server error' }),
+      JSON.stringify({ error: error.message || 'Internal server error' }),
       {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
