@@ -90,8 +90,15 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') || 'https://cdvdbyinqosqidwavobp.supabase.co';
-    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkdmRieWlucW9zcWlkd2F2b2JwIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MDY4MzMzNywiZXhwIjoyMDc2MjU5MzM3fQ.QTQdlu-5s0iiqfSrSsYADaRLNc5eCWCF7zYn3Vsfw8Y';
+    // ⚠️ SECURITY FIX: Remove hardcoded credentials - Use environment variables ONLY
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    
+    // Validate environment variables are set
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Missing required environment variables: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+    }
+
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Check if user already exists
